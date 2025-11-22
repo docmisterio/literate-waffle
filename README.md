@@ -6,8 +6,9 @@ Generate quick-grading CSV rubrics from Geeks Who Drink-style trivia PDFs.
 
 - Python 3.9+ (macOS ships with 3.9; any later version works)
 - PDFs must be the standard export with embedded question text (not image-only scans)
+- Optional: [`pdfminer.six`](https://github.com/pdfminer/pdfminer.six) for best text extraction accuracy (`python3 -m pip install pdfminer.six`)
 
-The script is self-contained—no external packages needed.
+The script automatically falls back to a lightweight built-in parser if `pdfminer.six` is unavailable, but complex modern exports generally require it to decode embedded fonts correctly.
 
 ## Usage
 

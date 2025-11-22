@@ -16,6 +16,11 @@ import zlib
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
+try:
+    from pdfminer.high_level import extract_text as pdfminer_extract_text
+except ImportError:  # pragma: no cover - optional dependency
+    pdfminer_extract_text = None
+
 
 STREAM_PATTERN = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.DOTALL)
 NOTE_PATTERN = re.compile(r"\|\s*\(note:.*", re.IGNORECASE)
@@ -104,14 +109,11 @@ def _is_mostly_printable(token: str) -> bool:
     return printable >= int(len(token) * 0.8) or printable == len(token)
 
 
-def extract_text(pdf_path: Path) -> str:
-    """Return sanitized text scraped from the PDF content streams."""
+def _sanitize_flat_text(text: str) -> str:
+    """Normalize whitespace and remove stray control codes."""
 
-    data = pdf_path.read_bytes()
-    strings = [token for token in read_stream_strings(data) if _is_mostly_printable(token)]
-    combined = "".join(strings)
     sanitized = "".join(
-        ch for ch in combined if 32 <= ord(ch) <= 126 or ch in "\t\r\n"
+        ch for ch in text if 32 <= ord(ch) <= 126 or ch in "\t\r\n"
     )
     sanitized = sanitized.replace("en-US", " ")
     sanitized = sanitized.replace("\r", " ").replace("\n", " ")
@@ -119,12 +121,43 @@ def extract_text(pdf_path: Path) -> str:
     return sanitized.strip()
 
 
+def _extract_text_with_pdfminer(pdf_path: Path) -> str | None:
+    """Use pdfminer.six when available for better text fidelity."""
+
+    if pdfminer_extract_text is None:
+        return None
+    try:
+        return pdfminer_extract_text(str(pdf_path))
+    except Exception:  # pragma: no cover - passthrough on parse errors
+        return None
+
+
+def _extract_text_from_streams(pdf_path: Path) -> str:
+    """Fallback to manual stream parsing when pdfminer is unavailable."""
+
+    data = pdf_path.read_bytes()
+    strings = [token for token in read_stream_strings(data) if _is_mostly_printable(token)]
+    return "".join(strings)
+
+
+def extract_text(pdf_path: Path) -> str:
+    """Return sanitized text scraped from the PDF using the best available method."""
+
+    text = _extract_text_with_pdfminer(pdf_path)
+    if text:
+        return _sanitize_flat_text(text)
+
+    fallback = _extract_text_from_streams(pdf_path)
+    return _sanitize_flat_text(fallback)
+
+
 def parse_rounds(text: str) -> List[Tuple[str, List[Tuple[str, str]]]]:
     """Identify rounds and their answers from the flattened document text."""
 
     rounds: List[Tuple[str, List[Tuple[str, str]]]] = []
     round_pattern = re.compile(
-        r"(Round\s+\d+:\s*.*?)(?=Round\s+\d+:|Tiebreakers\b|$)", re.IGNORECASE | re.DOTALL
+        # Some exports drop punctuation/spacing around the round number, so accept either case.
+        r"(\bRound\s*\d+\b.*?)(?=\bRound\s*\d+\b|Tiebreakers\b|$)", re.IGNORECASE | re.DOTALL
     )
 
     for match in round_pattern.finditer(text):
@@ -157,7 +190,11 @@ def _parse_questions(body: str) -> List[Tuple[str, str]]:
     """Extract (question number, answer) pairs from a round body."""
 
     entries: List[Tuple[str, str]] = []
-    question_pattern = re.compile(r"(\d+)\.\s+(.*?)(?=\d+\.\s+|$)", re.DOTALL)
+    question_pattern = re.compile(
+        # Negative lookahead after the period avoids splitting on decimals such as "1.21".
+        r"(\d+)\.(?!\d)\s*(.*?)(?=\d+\.(?!\d)\s*|$)",
+        re.DOTALL,
+    )
     expected_number: int | None = None
 
     for number_text, fragment in question_pattern.findall(body):
@@ -182,6 +219,9 @@ def _parse_questions(body: str) -> List[Tuple[str, str]]:
     return entries
 
 
+QUESTION_ANSWER_SPLIT = re.compile(r"[?!](?:['\"”’)\]]+)?\s+")
+
+
 def extract_answer(segment: str) -> str | None:
     """
     Attempt to pull the answer from a question+answer segment.
@@ -189,17 +229,19 @@ def extract_answer(segment: str) -> str | None:
     Returns None when the segment appears to be question text only.
     """
 
-    text = segment.strip()
+    text = NOTE_PATTERN.split(segment, 1)[0].strip()
     if not text:
         return None
 
-    for marker in ("?", "!"):
-        if marker in text:
-            pos = text.rfind(marker)
-            trailing = text[pos + 1 :].strip()
-            if trailing:
-                return trailing
-            return None
+    split_match: re.Match[str] | None = None
+    for candidate in QUESTION_ANSWER_SPLIT.finditer(text):
+        split_match = candidate
+
+    if split_match:
+        trailing = text[split_match.end() :].strip()
+        if trailing:
+            return trailing
+        return None
 
     return text
 
