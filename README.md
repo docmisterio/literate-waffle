@@ -12,6 +12,20 @@ The script automatically falls back to a lightweight built-in parser if `pdfmine
 
 ## Usage
 
+### Getting the Code
+
+1. Visit the GitHub repository at `https://github.com/docmisterio/literate-waffle` (or search “literate-waffle GitHub”).
+2. Click the green “Code” button and copy the HTTPS URL.
+3. Clone it locally:
+   ```bash
+   git clone https://github.com/docmisterio/literate-waffle.git
+   cd literate-waffle
+   ```
+4. (Optional but recommended) install pdfminer for best PDF parsing:
+   ```bash
+   python3 -m pip install pdfminer.six
+   ```
+
 ```bash
 python3 trivia_rubric.py /path/to/Quiz.pdf
 ```
